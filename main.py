@@ -9,7 +9,7 @@ import asyncio
 from spade.agent import Agent
 from spade.behaviour import CyclicBehaviour
 from spade import wait_until_finished
-
+import numpy as np
 
 def spawn_walkers(client, number_of_walkers):
     world = client.get_world()
@@ -54,7 +54,6 @@ def spawn_camera_sensor(vehicle):
     camera_sensor = world.spawn_actor(camera_bp, camera_transform, attach_to=vehicle)
     return camera_sensor
 
-
 def spawn_collision_sensor(vehicle):
     world = vehicle.get_world()
     bp = world.get_blueprint_library().find('sensor.other.collision')
@@ -68,6 +67,33 @@ def on_collision(agent, event):
 
     # Set the collision flag for the agent
     agent.has_collided = True
+
+class ObstacleDetectionSensor(object):
+    def init(self, parent_actor):
+        self.sensor = None
+        self._parent = parent_actor
+        self.distance = None
+        self._event_count = 0
+        world = self._parent.get_world()
+        bp = world.get_blueprint_library().find('sensor.other.obstacle')
+        bp.set_attribute('distance','50')
+        bp.set_attribute('hit_radius','5')
+        bp.set_attribute('debug_linetrace','true')
+        bp.set_attribute('only_dynamics', 'true')
+        self.sensor = world.spawn_actor(bp, carla.Transform(), attach_to=self._parent)
+        # We need to pass the lambda a weak reference to self to avoid circular
+        # reference.
+        weak_self = weakref.ref(self)
+        self.sensor.listen(lambda event: ObstacleDetectionSensor._on_obstacle(weak_self, event))
+
+    @staticmethod
+    def _on_obstacle(weak_self, event):
+        self = weak_self()
+        if not self:
+            return
+        self.distance = event.distance
+        self._event_count += 1
+        print ("Event %s, in line of sight with %s at distance %u" % (self._event_count, event.other_actor.type_id, event.distance))
 
 
 # Define a VehicleAgent class for controlling vehicles
@@ -89,7 +115,7 @@ class VehicleAgent(Agent):
                 velocity_error = target_velocity - vehicle_state.x
                 control = carla.VehicleControl()
                 if velocity_error > 0:
-                    control.throttle = 5.5  # You can adjust the throttle value
+                    control.throttle = 2.5  # You can adjust the throttle value
                     control.brake = 0.0
                 else:
                     control.throttle = 0.0
@@ -144,6 +170,9 @@ async def main():
         sensors.append(sensor)
         camera_sensor = spawn_camera_sensor(vehicles[0])
         sensors.append(camera_sensor)
+        obstacle_sensor = ObstacleDetectionSensor()
+        obstacle_sensor.init(vehicle)
+        sensors.append(obstacle_sensor)
         await agent.start()
         vehicle_agents.append(agent)
 
@@ -168,18 +197,24 @@ async def main():
 
     try:
         # Run simulation for a while
-        time.sleep(90)
+        await asyncio.sleep(15)  # Adjust as needed
     finally:
+        print("Keyboard interrupt received. Exiting...")
     # Stop agents and cleanup
         for agent in vehicle_agents:
+            print("Stopping agent {}".format(agent.jid))
             await agent.stop()
         for agent in walker_agents:
+            print("Stopping agent {}".format(agent.jid))
             await agent.stop()
         for vehicle in vehicles:
+            print("Destroying vehicle {}".format(vehicle.id))
             vehicle.destroy()
         for walker in walkers:
+            print("Destroying walker {}".format(walker.id))
             walker.destroy()
         for sensor in sensors:
+            print("Destroying sensor {}".format(sensor.id))
             sensor.destroy()
 
     print("Simulation finished!")
